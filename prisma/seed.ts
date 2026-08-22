@@ -21,7 +21,7 @@ async function main() {
   await prisma.user.deleteMany();
   await prisma.organization.deleteMany();
 
-  const passwordHash = await bcrypt.hash('Password@123', BCRYPT_COST);
+  const passwordHash = await bcrypt.hash(process.env.SEED_USER_PASSWORD || 'Password@123', BCRYPT_COST);
 
   // ── Organizations ────────────────────────────────────────────
   const acme = await prisma.organization.create({ data: { name: 'Acme Corp' } });
