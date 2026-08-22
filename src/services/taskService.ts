@@ -3,6 +3,7 @@ import { getProject } from './projectService';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { TaskFilters } from '../repositories/taskRepository';
+import { enqueueAssignmentEmail } from '../jobs/emailQueue';
 
 // Every function re-verifies the parent project belongs to the caller's
 // org (via projectService.getProject, which throws 404/403 as needed)
@@ -51,7 +52,7 @@ export async function deleteTask(orgId: string, taskId: string) {
 }
 
 export async function assignTask(orgId: string, taskId: string, userId: string) {
-  await getTaskOrThrow(orgId, taskId);
+  const task = await getTaskOrThrow(orgId, taskId);
 
   // Assignment spec: "The assigned user must belong to the same organization
   // as the task" — verify via org_members, never assume the client is right.
@@ -67,7 +68,38 @@ export async function assignTask(orgId: string, taskId: string, userId: string) 
     throw new AppError(409, 'ALREADY_ASSIGNED', 'This user is already assigned to the task');
   }
 
-  return repo.createAssignment(taskId, userId);
+  const assignment = await repo.createAssignment(taskId, userId);
+
+  // CONSISTENCY STRATEGY (per assignment Task 04 requirement):
+  // The assignment is persisted FIRST and is the source of truth — it
+  // must succeed regardless of what happens to the notification. If
+  // enqueueing the email job fails (e.g. Redis is temporarily down),
+  // we log the failure here and do NOT roll back or fail this request;
+  // the user is already validly assigned to the task.
+  //
+  // ASSUMPTION (stated per guideline #11): a fully production-grade
+  // version of this would use the transactional outbox pattern — write
+  // a pending-notification row in the SAME DB transaction as the
+  // assignment, then have a separate poller enqueue it — guaranteeing
+  // zero notification loss even across a Redis outage. That additional
+  // outbox table/poller is out of scope for this assignment's timeline;
+  // we accept "assignment always succeeds, notification is best-effort
+  // with retry + dead-letter" as the deliberate trade-off here.
+  try {
+    const assignee = await prisma.user.findUnique({ where: { id: userId } });
+    if (assignee) {
+      await enqueueAssignmentEmail({
+        taskId: task.id,
+        taskTitle: task.title,
+        assigneeUserId: userId,
+        assigneeEmail: assignee.email,
+      });
+    }
+  } catch (err) {
+    console.error(`Failed to enqueue assignment email for task ${taskId}:`, err);
+  }
+
+  return assignment;
 }
 
 export async function unassignTask(orgId: string, taskId: string, userId: string) {
