@@ -1,8 +1,3 @@
-# NOTE: Only postgres is defined here for Task 01 (data modeling).
-# api, worker, and redis services will be added in Task 04, per the
-# assignment's incremental structure — adding them now would be
-# speculative (see coding guideline: "Simplicity First").
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -13,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5434:5432"
+      - "5434:5432" # NOTE: keep your own local port here if you changed it (e.g. 5434) to avoid a conflict
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,6 +16,59 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: taskflow_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # NOTE on connection strings below: inside the Docker network, containers
+  # reach each other by SERVICE NAME (postgres, redis), not "localhost" —
+  # "localhost" inside a container refers to itself. This is why api/worker
+  # get their own DATABASE_URL/REDIS_URL here instead of reading the
+  # localhost-based ones from .env (those remain correct for `npm run dev`
+  # on the host machine, which talks to these containers via the published
+  # ports above).
+  api:
+    build: .
+    container_name: taskflow_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      PORT: 3000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+
+  worker:
+    build: .
+    container_name: taskflow_worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: node dist/jobs/worker.js
 
 volumes:
   pgdata:
