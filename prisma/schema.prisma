@@ -1,0 +1,212 @@
+// TaskFlow — Prisma Schema
+// Database: PostgreSQL only (per assignment requirement)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────
+// Native Postgres enums per assignment spec (Task 01).
+
+enum TaskStatus {
+  todo
+  in_progress
+  review
+  done
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum OrgRole {
+  org_admin
+  member
+}
+
+// ─── Users ──────────────────────────────────────────────────────────
+// A user can belong to multiple organizations (via OrgMember),
+// so role/org context is NOT stored on the user directly.
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  orgMemberships   OrgMember[]
+  assignedTasks    TaskAssignment[]
+  comments         Comment[]
+  refreshTokens    RefreshToken[]
+
+  @@map("users")
+}
+
+// ─── Organizations ──────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members  OrgMember[]
+  projects Project[]
+
+  @@map("organizations")
+}
+
+// ─── Org Membership (join table: user <-> org, with role) ─────────
+// This is the source of truth for "does user X have access to org Y,
+// and with what role". JWT carries orgId+role as a snapshot, but every
+// service call re-validates against this table before mutating data
+// (see Task 02: services must not trust client-provided org_id alone).
+
+model OrgMember {
+  id     String  @id @default(uuid())
+  orgId  String  @map("org_id")
+  userId String  @map("user_id")
+  role   OrgRole @default(member)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // A user has exactly one role per org — prevents duplicate membership rows.
+  @@unique([orgId, userId])
+  // Index: "list all members of org X" is a frequent admin-panel query.
+  @@index([orgId])
+  // Index: "which orgs does user X belong to" (used on every login/JWT issue).
+  @@index([userId])
+  @@map("org_members")
+}
+
+// ─── Projects ───────────────────────────────────────────────────────
+
+model Project {
+  id          String    @id @default(uuid())
+  orgId       String    @map("org_id")
+  name        String
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at") // bonus: soft delete
+
+  // CASCADE: if an organization is deleted, its projects have no
+  // meaningful standalone existence — delete them too. This mirrors
+  // how the assignment scopes every resource strictly under one org.
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  tasks        Task[]
+
+  // Index: every project list/detail query is scoped by org_id first
+  // (multi-tenant isolation — this is the single most common WHERE clause
+  // in the whole system).
+  @@index([orgId])
+  @@map("projects")
+}
+
+// ─── Tasks ──────────────────────────────────────────────────────────
+
+model Task {
+  id          String       @id @default(uuid())
+  projectId   String       @map("project_id")
+  title       String
+  description String?
+  status      TaskStatus   @default(todo)
+  priority    TaskPriority @default(medium)
+  dueDate     DateTime?    @map("due_date")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+  deletedAt   DateTime?    @map("deleted_at") // bonus: soft delete
+
+  // CASCADE: a task cannot outlive its project — same reasoning as
+  // Project -> Organization above.
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignments TaskAssignment[]
+  comments    Comment[]
+
+  // Index: filtering tasks by project + status is the #1 query
+  // (task board views, "todo tasks in project X").
+  @@index([projectId, status])
+  // Index: filtering tasks by project + priority (dashboard, sorting).
+  @@index([projectId, priority])
+  // Index: due-date range filters ("tasks due this week") scan this directly.
+  @@index([dueDate])
+  @@map("tasks")
+}
+
+// ─── Task Assignments ───────────────────────────────────────────────
+
+model TaskAssignment {
+  id         String   @id @default(uuid())
+  taskId     String   @map("task_id")
+  userId     String   @map("user_id")
+  assignedAt DateTime @default(now()) @map("assigned_at")
+
+  // CASCADE on task: if the task is hard-deleted, its assignment
+  // records are meaningless — remove them.
+  // RESTRICT on user: prevent deleting a user who still has active
+  // assignments — force explicit reassignment/cleanup first, so we
+  // never silently lose "who was this task assigned to" history.
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  // A user can only be assigned once to a given task (no duplicate rows).
+  @@unique([taskId, userId])
+  // Index: "show all tasks assigned to user X" — the assignee filter
+  // in Task 03's GET /tasks?assignee=... query.
+  @@index([userId])
+  @@map("task_assignments")
+}
+
+// ─── Comments ───────────────────────────────────────────────────────
+
+model Comment {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  userId    String   @map("user_id") // author
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // CASCADE on task: comments belong to a task's lifecycle.
+  // RESTRICT on user (author): preserve comment authorship integrity —
+  // don't allow deleting a user while their authored comments still exist.
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  // Index: "load all comments for task X" (task detail view) — every
+  // comment fetch is scoped by taskId.
+  @@index([taskId])
+  @@map("comments")
+}
+
+// ─── Refresh Tokens ─────────────────────────────────────────────────
+// Required by Task 02: refresh tokens must be stored in DB with
+// revocation support (not just stateless JWTs).
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash") // never store raw token
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // CASCADE: refresh tokens have no purpose once the user is gone.
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Index: token verification on every /auth/refresh call looks this up.
+  @@index([userId])
+  @@map("refresh_tokens")
+}
