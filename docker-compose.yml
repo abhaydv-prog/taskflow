@@ -1,0 +1,26 @@
+# NOTE: Only postgres is defined here for Task 01 (data modeling).
+# api, worker, and redis services will be added in Task 04, per the
+# assignment's incremental structure — adding them now would be
+# speculative (see coding guideline: "Simplicity First").
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskflow_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
