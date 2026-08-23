@@ -1,5 +1,9 @@
 # TaskFlow - Multi-Tenant Project Management Backend
 
+Live API:https://taskflow-production-e248.up.railway.app
+Health check:https://taskflow-production-e248.up.railway.app/health
+API Docs (Swagger):https://taskflow-production-e248.up.railway.app/api-docs/
+
 TaskFlow is a backend system for managing organizations, projects, tasks, and
 assignments, with asynchronous email notifications on task assignment. Built
 with strict multi-tenant data isolation, clean layered architecture, and
@@ -81,7 +85,7 @@ curl http://localhost:3000/health
 
 ## API Documentation
 
-- Swagger UI: http://localhost:3000/docs
+- Swagger UI: https://taskflow-production-e248.up.railway.app/api-docs/
 - OpenAPI spec: [src/docs/openapi.json](./src/docs/openapi.json)
 - Postman collection: [postman/TaskFlow.postman_collection.json](./postman/TaskFlow.postman_collection.json) - imports and runs with no manual edits against http://localhost:3000
 
