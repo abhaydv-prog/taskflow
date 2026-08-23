@@ -5,7 +5,10 @@
     "version": "1.0.0",
     "description": "Multi-tenant project management backend — auth, projects, tasks, and background job status."
   },
-  "servers": [{ "url": "http://localhost:3000" }],
+  "servers": [
+  { "url": "https://taskflow-production-e248.up.railway.app", "description": "Production" },
+  { "url": "http://localhost:3000", "description": "Local development" }
+],
   "components": {
     "securitySchemes": {
       "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
