@@ -10,6 +10,11 @@ export const authRateLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // Integration tests exercise /auth/* dozens of times per run — without
+  // this, the shared in-memory store (one instance for the app's lifetime)
+  // would trip 429s partway through the suite. Real (non-test) traffic is
+  // completely unaffected; this only short-circuits when NODE_ENV=test.
+  skip: () => process.env.NODE_ENV === 'test',
   message: {
     error: 'Too many requests, please try again later',
     code: 'RATE_LIMITED',
