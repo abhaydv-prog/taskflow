@@ -85,7 +85,7 @@ curl http://localhost:3000/health
 
 ## API Documentation
 
-- Swagger UI: http://localhost:3000/docs
+- Swagger UI: https://taskflow-production-e248.up.railway.app/api-docs/
 - OpenAPI spec: [src/docs/openapi.json](./src/docs/openapi.json)
 - Postman collection: [postman/TaskFlow.postman_collection.json](./postman/TaskFlow.postman_collection.json) - imports and runs with no manual edits against http://localhost:3000
 
