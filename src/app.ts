@@ -9,6 +9,7 @@ import { errorHandler } from './middleware/errorHandler';
 import openapiSpec from './docs/openapi.json';
 
 export const app = express();
+app.set('trust proxy', 1);
 
 app.use(cors());
 app.use(express.json());
