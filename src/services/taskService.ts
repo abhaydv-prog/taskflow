@@ -5,11 +5,20 @@ import { AppError } from '../middleware/errorHandler';
 import { TaskFilters } from '../repositories/taskRepository';
 import { enqueueAssignmentEmail } from '../jobs/emailQueue';
 
+// Guards the enqueue call so a slow/unreachable Redis can never hang the
+// HTTP response — matches the documented design ("assignment always
+// succeeds, notification is best-effort"), which the plain await
+// previously didn't actually enforce.
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Operation timed out')), ms)),
+  ]);
+}
+
 // Every function re-verifies the parent project belongs to the caller's
-// org (via projectService.getProject, which throws 404/403 as needed)
-// BEFORE touching any task. This is what makes "every task must belong
-// to a project within the authenticated user's organization" hold true
-// even if someone guesses a valid task ID from another org.
+// org before touching any task, so a guessed task ID from another org
+// still can't be accessed.
 
 export async function listTasks(orgId: string, projectId: string, filters: TaskFilters, page: number, limit: number) {
   await getProject(orgId, projectId);
@@ -23,7 +32,6 @@ async function getTaskOrThrow(orgId: string, taskId: string) {
   if (!task) {
     throw new AppError(404, 'TASK_NOT_FOUND', 'Task not found');
   }
-  // Verify the task's project belongs to the caller's org.
   await getProject(orgId, task.projectId);
   return task;
 }
@@ -37,7 +45,7 @@ export async function createTask(
   projectId: string,
   data: { title: string; description?: string; status?: any; priority?: any; dueDate?: Date }
 ) {
-  await getProject(orgId, projectId); // ensures project exists in caller's org
+  await getProject(orgId, projectId);
   return repo.createTask(projectId, data);
 }
 
@@ -54,8 +62,6 @@ export async function deleteTask(orgId: string, taskId: string) {
 export async function assignTask(orgId: string, taskId: string, userId: string) {
   const task = await getTaskOrThrow(orgId, taskId);
 
-  // Assignment spec: "The assigned user must belong to the same organization
-  // as the task" — verify via org_members, never assume the client is right.
   const membership = await prisma.orgMember.findUnique({
     where: { orgId_userId: { orgId, userId } },
   });
@@ -70,30 +76,23 @@ export async function assignTask(orgId: string, taskId: string, userId: string) 
 
   const assignment = await repo.createAssignment(taskId, userId);
 
-  // CONSISTENCY STRATEGY (per assignment Task 04 requirement):
-  // The assignment is persisted FIRST and is the source of truth — it
-  // must succeed regardless of what happens to the notification. If
-  // enqueueing the email job fails (e.g. Redis is temporarily down),
-  // we log the failure here and do NOT roll back or fail this request;
-  // the user is already validly assigned to the task.
-  //
-  // ASSUMPTION (stated per guideline #11): a fully production-grade
-  // version of this would use the transactional outbox pattern — write
-  // a pending-notification row in the SAME DB transaction as the
-  // assignment, then have a separate poller enqueue it — guaranteeing
-  // zero notification loss even across a Redis outage. That additional
-  // outbox table/poller is out of scope for this assignment's timeline;
-  // we accept "assignment always succeeds, notification is best-effort
-  // with retry + dead-letter" as the deliberate trade-off here.
+  // Consistency strategy: the assignment is persisted first and is the
+  // source of truth. If enqueueing the email fails, we log it and do
+  // NOT roll back the assignment — the user is already validly assigned.
+  // A stricter version would use a transactional outbox table to
+  // guarantee zero notification loss; skipped here for time.
   try {
     const assignee = await prisma.user.findUnique({ where: { id: userId } });
     if (assignee) {
-      await enqueueAssignmentEmail({
-        taskId: task.id,
-        taskTitle: task.title,
-        assigneeUserId: userId,
-        assigneeEmail: assignee.email,
-      });
+      await withTimeout(
+        enqueueAssignmentEmail({
+          taskId: task.id,
+          taskTitle: task.title,
+          assigneeUserId: userId,
+          assigneeEmail: assignee.email,
+        }),
+        3000
+      );
     }
   } catch (err) {
     console.error(`Failed to enqueue assignment email for task ${taskId}:`, err);

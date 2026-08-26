@@ -10,4 +10,7 @@ function parseRedisUrl(url: string) {
   };
 }
 
-export const redisConnection = parseRedisUrl(process.env.REDIS_URL || 'redis://localhost:6379');
+export const redisConnection = {
+  ...parseRedisUrl(process.env.REDIS_URL || 'redis://localhost:6379'),
+  connectTimeout: 5000,
+};
